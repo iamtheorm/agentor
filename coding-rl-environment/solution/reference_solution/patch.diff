@@ -1,0 +1,61 @@
+diff -ur repo/app/api/endpoints.py repo_patched/app/api/endpoints.py
+--- repo/app/api/endpoints.py	2026-09-10 12:26:44
++++ repo_patched/app/api/endpoints.py	2026-09-10 12:45:16
+@@ -26,9 +26,11 @@
+     # the lock is never released because there is no try/finally block. 
+     # This leads to a permanent lock for this idempotency_key if an error occurs!
+     
+-    transaction = await process_payment(db, request.user_id, request.amount, idempotency_key)
+-    
+-    # We release the lock, but we assume the operation succeeded
+-    await idempotency_manager.release_lock(idempotency_key)
++    try:
++        transaction = await process_payment(db, request.user_id, request.amount, idempotency_key)
++    finally:
++        # Always clear the lock when done, whether successful or failed,
++        # so the transaction can be retried if it failed, or idempotency state can be updated correctly
++        await idempotency_manager.release_lock(idempotency_key)
+     
+     return {"status": "success", "transaction_id": transaction.id}
+diff -ur repo/app/core/idempotency.py repo_patched/app/core/idempotency.py
+--- repo/app/core/idempotency.py	2026-09-10 12:26:09
++++ repo_patched/app/core/idempotency.py	2026-09-10 12:45:32
+@@ -12,21 +12,10 @@
+ 
+     async def acquire_lock(self, idempotency_key: str, ttl: int = 300) -> bool:
+         """
+-        Acquires a lock for a given idempotency key.
+-        BUG: This is a check-then-set race condition!
+-        Concurrent requests can both see `exists == False` before either calls `set`.
++        Acquires a lock atomically using Redis SET NX.
+         """
+-        exists = await self.client.exists(f"idemp:{idempotency_key}")
+-        if exists:
+-            return False
+-        
+-        # Simulate some minor delay that naturally occurs in networked systems
+-        # Exacerbates the race condition for tests.
+-        import asyncio
+-        await asyncio.sleep(0.01)
+-
+-        await self.client.set(f"idemp:{idempotency_key}", "locked", ex=ttl)
+-        return True
++        result = await self.client.set(f"idemp:{idempotency_key}", "locked", ex=ttl, nx=True)
++        return bool(result)
+ 
+     async def release_lock(self, idempotency_key: str):
+         """
+diff -ur repo/app/services/ledger.py repo_patched/app/services/ledger.py
+--- repo/app/services/ledger.py	2026-09-10 12:26:26
++++ repo_patched/app/services/ledger.py	2026-09-10 12:45:57
+@@ -5,8 +5,8 @@
+ import asyncio
+ 
+ async def process_payment(session: AsyncSession, user_id: str, amount: float, idempotency_key: str):
+-    # Retrieve account
+-    result = await session.execute(select(Account).where(Account.user_id == user_id))
++    # FIX: Use SELECT ... FOR UPDATE to lock the row
++    result = await session.execute(select(Account).where(Account.user_id == user_id).with_for_update())
+     account = result.scalars().first()
+     
+     if not account:

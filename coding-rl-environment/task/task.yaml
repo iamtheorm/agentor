@@ -1,0 +1,24 @@
+version: "1.0"
+metadata:
+  name: "distributed-idempotency-race-condition"
+  difficulty: "hard"
+  domain: "Concurrency & Distributed Systems"
+  timeout_seconds: 1800
+
+environment:
+  container: "environment/Dockerfile"
+  network_isolation: true  # Simulates --network none during evaluation
+
+evaluation:
+  verifier_script: "verifier/evaluate.py"
+  oracle_verification: true
+
+agent_tools:
+  - name: "bash_shell"
+    description: "Execute bash commands for running greps, navigating directories, or executing pytest manually during debugging."
+  - name: "python_interpreter"
+    description: "Run python scripts for quick sandbox execution."
+  - name: "file_reader"
+    description: "Read contents of files."
+  - name: "file_writer"
+    description: "Modify or create files."
